@@ -1,229 +1,286 @@
-# Loop
+# Loop — arhitectură și decizii
 
-## Purpose
+> Stare: propunere consolidată. Rolurile Planner–Coder–Verifier–Runtime sunt separate; software-ul concret este marcat selectat, candidat sau neales. Actualizat: 2026-09-24. `loop.md` este documentul autoritar; `spec.md` este obiectivul fiecărui produs.
 
-This file defines the execution contract for one autonomous loop. The loop remains simple: inspect the current objective, make one bounded change, verify it, and persist the result. Before every iteration, the runner applies five typed Jev questions. They control context, execution, tools, and permissions without turning the loop into an unstructured transcript.
+## 1. Scop și constrângeri
 
-## Core invariant
+Loop trebuie să transforme aceeași formă de specificație Markdown în șase produse: newsletter, analiză piață crypto, creare video, analiză PDF pentru investitori, constructor de baze de date cu audit și constructor de website-uri.
 
-Every iteration MUST follow:
+Utilizatorul este non-programator:
 
-```text
-retrieve relevant state
-→ answer the five Jev questions
-→ assign one bounded action to one authorized role
-→ execute
-→ verify
-→ commit the result
-→ decide whether to continue
-```
+- nu citește cod, diff-uri, terminal sau JSON;
+- nu scrie și nu întreține scripturi tehnice;
+- aprobă milestone-uri numai prin comportamentul observabil al produsului;
+- primește exact: **Ce s-a construit**, **Cum testezi**, **Ce rezultat trebuie să vezi pe ecran**.
 
-The model's prose is advisory. The typed decision, policy checks, tool result, and verification evidence are authoritative.
+Constrângeri fixe:
 
-## The five Jev questions
+- Repozitoarele sunt private în GitHub și păstrează codul, specificația, PR-urile, starea și dovezile.
+- 9router de la `localhost:20128`, cu configurația RTK și fallback-ul existent, este infrastructură fixă și nu se reconfigurează.
+- Serverul local are V100 și Ollama cu modelul Qwen3.8-27B declarat de utilizator; tagul exact și performanța trebuie verificate.
+- OpenCode Go și Merge Gateway sunt alocări existente, dar modelul/providerul concret rămâne agnostic momentan.
+- Plannerul va putea folosi ulterior un model din oferta OpenCode Go; alegerea nu este făcută în acest document.
+- Codarea și continuous improvement sunt locale; planificarea și verificarea sunt online, cu modele diferite.
 
-The runner MUST resolve these questions before every iteration. Deterministic policy may answer a question when the answer is unambiguous; an evaluator/model is used only for ambiguous cases.
+## 2. Separarea proprietarilor
 
-### 1. Context visibility
-
-**Question:** Which state, history, instructions, and evidence are relevant to this iteration, and how visible should each item be?
-
-Each context item MUST receive one visibility level:
-
-- `hide`: do not include it.
-- `short`: include an identifier and compact result.
-- `long`: include the result and relevant details.
-- `full`: include the complete content.
-
-The runner MUST prefer targeted state and evidence over the full historical transcript. `record.md` or equivalent history MUST NOT be loaded in full by default.
-
-### 2. Context strategy
-
-**Question:** Should the current assembled context be reused, or should it be rebuilt from authoritative state?
-
-Allowed decisions:
-
-- `reuse`: the relevant state version, objective, permissions, and evidence references are unchanged.
-- `rebuild`: state changed, context is stale, an iteration failed, evidence conflicts, or the task requires a different view.
-
-A rebuild MUST use authoritative state and evidence references. It MUST NOT silently inherit an unverified model claim.
-
-### 3. Executor routing
-
-**Question:** Which executor is appropriate for this bounded action?
-
-Allowed executors:
-
-- `deterministic`: parsing, schema validation, hashing, bookkeeping, and fixed policy checks.
-- `local_or_cheap_model`: classification, summarization, retrieval ranking, and low-risk read-only work.
-- `frontier_model`: architecture, ambiguity, difficult debugging, cross-file reasoning, and final decisions with high uncertainty.
-- `human_approval`: irreversible, externally visible, high-impact, or policy-ambiguous actions.
-
-Routing MUST consider context rebuild cost, not only per-token price. A cheap model MUST NOT receive the entire session when a small purpose-built context is sufficient.
-
-### 4. Tool selection
-
-**Question:** Which tool is required, and which minimum schema must be disclosed to execute it safely?
-
-Tools MUST be disclosed progressively:
-
-1. expose a short capability description;
-2. select the tool;
-3. load and validate only that tool's required schema;
-4. execute with typed arguments;
-5. remove unnecessary tool detail from the next context.
-
-The executor MUST use one selected tool or an explicitly recorded tool chain. Unknown or unnecessary tools MUST NOT be invoked.
-
-### 5. Permission
-
-**Question:** Is the proposed action allowed, requires approval, or denied?
-
-Allowed decisions:
-
-- `allow`: policy authorizes the exact action.
-- `ask`: the action needs human approval before execution.
-- `deny`: the action violates policy or role ownership.
-
-Default policy:
-
-- deny access to secrets and credentials, including `.env`, `.ssh`, tokens, private keys, and credential stores;
-- deny writes outside the declared workspace or assigned file scope;
-- allow read-only inspection when it does not expose restricted data;
-- require approval for destructive actions, external publication, irreversible operations, or actions outside the current objective;
-- deny a role that attempts to modify an artifact owned by another role.
-
-No action may execute when the decision is `ask` or `deny`.
-
-## Role ownership and write boundaries
-
-Every iteration MUST assign one primary role. Roles may read shared context, but each role may modify only its owned artifact type.
-
-| Role | May modify | Must not modify |
+| Proprietar | Responsabilitate | Nu are voie să facă |
 |---|---|---|
-| `Planner` | plan, objective decomposition, acceptance criteria, ordered next actions | source code, tests, verification evidence, authoritative state, permissions |
-| `Coder` | source code and implementation files explicitly assigned to the coding task | plan, objective, acceptance criteria, verification evidence, permissions |
-| `Tester` | test code when explicitly assigned; test outputs and test reports | production code, plan, authoritative state, permissions |
-| `Verifier` | verification result, evidence references, defect findings, pass/fail recommendation | source code, plan, authoritative state, permissions |
-| `StateManager` | authoritative state, iteration metadata, record entries, hashes, links to evidence | source code, plan content, test implementation, verification conclusions |
-| `PermissionGuard` | permission decision and audit event only | every project artifact and execution target |
-| `Human` | any artifact after explicit approval | none, subject to repository policy |
+| `spec.md` | Obiectivul și criteriile produsului | Nu conține implementare |
+| Planner | Transformă obiectivul în task-uri verificabile, așteaptă verdictul și decide următoarea etapă | Nu scrie cod, nu rulează implementarea, nu declară singur succesul |
+| Coder | Implementează un singur task într-un workspace izolat și predă dovezi | Nu schimbă planul, `spec.md`, criteriile sau aprobă/îmbină propriul rezultat |
+| Verifier | Verifică independent codul și dovezile contra planului și `spec.md` | Nu implementează corecția și nu înlocuiește aprobarea umană |
+| Runtime | Rulează workflow-ul durabil, pause/resume, retry, lock, idempotency și recuperarea | Nu decide sensul produsului și nu este modelul |
+| GitHub/CI | Păstrează versiuni și execută verificări deterministe | Nu interpretează singur intenția produsului |
+| Utilizator | Aprobă sau respinge comportamentul observabil | Nu trebuie să inspecteze codul |
 
-Role ownership is enforced by the runner, not by model instructions alone. A proposed patch outside the role's write set MUST be rejected before execution.
+## 3. System Component Matrix
 
-The roles are sequentially constrained:
+| Componentă software | Rol exact | Local/online și model | Status |
+|---|---|---|---|
+| `spec.md` | Definește obiectivul și criteriile | GitHub privat; fără model | Selectat ca input standard |
+| OpenClaw Gateway | Canal Telegram, rutare pe proiect/agent, conversație planner și livrare HITL | Server local; modelul planner este configurabil online | **Candidat practic pentru Planner** |
+| Telegram | Interfața utilizatorului pentru cereri, clarificări, aprobări și feedback | Online; fără model | Canal ales pentru planner |
+| Planner model/provider | Transformă `spec.md` în planuri și task-uri și replanifică după verdict | Online; provider/model neselectat, ulterior posibil din OpenCode Go | **Agnostic / neselectat** |
+| Google AX | Runtime/orchestrator candidat pentru Task, Workspace, sandbox, resurse, rețea și suspend/resume | Server/cluster local; fără model propriu | **Candidat Runtime; nevalidat** |
+| Coder executor | Un singur executor ales dintre DSH și OpenCode | Local pe V100, Qwen3.8-27B prin Ollama | **DSH vs OpenCode: benchmark necesar** |
+| Verifier software | Agent/workflow separat care citește direct spec, task, commit și CI | Online, model diferit de Planner; software concret încă neselectat | **Neselectat** |
+| GitHub | Repository privat, branch, PR, commit, artefacte și istoric | Online; fără model | Selectat |
+| CI runner | Teste, build, lint, type, security și teste de UI unde se aplică | Runner verificat; fără model | Selectat ca rol; implementarea exactă de verificat |
+| Playwright | Teste browser și trace pentru produse cu UI web | Runner de test; fără model | Opțional per proiect |
+| `.loop/loop-state.json` | Stare durabilă, attempts, SHA-uri, task, verdict și recovery metadata | GitHub privat; fără model | Contract obligatoriu |
+| Jev/System One | Model/API de decizii tipizate, dacă va fi folosit; nu planner, coder sau runtime | Online; provider TypeSafe AI, endpoint și cost de verificat | **Opțional decision layer; nu este necesar pentru prima versiune** |
+
+## 4. Ce face Plannerul
+
+Plannerul execută următoarea buclă:
 
 ```text
-Planner → Coder → Tester/Verifier → StateManager
+Telegram request
+  -> OpenClaw identifică project_id
+  -> citește spec.md și starea proiectului
+  -> planner model online creează/actualizează planul
+  -> produce un singur task/goal verificabil
+  -> trimite task-ul coderului prin Runtime
+  -> așteaptă candidate_result și verdictul Verifierului
+  -> decide: corecție, task nou, realiniere, HITL sau finalizare
 ```
 
-A role may stop the loop by reporting `blocked`, `failed`, or `needs_human_approval`. It may not bypass another role's boundary.
+Plannerul nu transmite conversația completă coderului. Transmite un pachet versionat:
 
-## Iteration contract
-
-Before execution, the runner creates a decision envelope:
-
-```yaml
-iteration: <integer>
-objective: <stable objective id>
-role: Planner | Coder | Tester | Verifier | StateManager | PermissionGuard
-intent: <one bounded action>
-context:
-  items:
-    - id: <state/evidence/history id>
-      visibility: hide | short | long | full
-context_strategy:
-  decision: reuse | rebuild
-  reason: <short reason>
-routing:
-  executor: deterministic | local_or_cheap_model | frontier_model | human_approval
-  reason: <short reason>
-tool:
-  capability: <short description>
-  selected: <tool id or none>
-  arguments_validated: true | false
-permission:
-  decision: allow | ask | deny
-  reason: <policy reason>
-expected_result: <observable result>
+```json
+{
+  "project_id": "...",
+  "spec_sha": "...",
+  "plan_sha": "...",
+  "milestone_id": "...",
+  "task_id": "...",
+  "goal": "un singur obiectiv verificabil",
+  "scope": ["..."],
+  "acceptance_criteria": ["..."],
+  "required_tests": ["..."],
+  "starting_head_sha": "...",
+  "iteration": 1,
+  "max_attempts": 3,
+  "stop_condition": "...",
+  "privacy_class": "..."
+}
 ```
 
-The loop MUST refuse execution if any of these fields is missing, if the selected tool arguments fail validation, or if the role/write scope is invalid.
+### Cerințele Plannerului
 
-## Execution and verification
+- **PL1:** Păstrează `project_id` și `spec_sha` exacte.
+- **PL2:** Extrage obiectivul, cerințele și criteriile fără să inventeze implementarea.
+- **PL3:** Transformă cerințele în milestone-uri și task-uri mici, verificabile.
+- **PL4:** Fiecare task are goal unic, precondiții, scope, criterii, teste și condiție de oprire.
+- **PL5:** Trimite task-ul structurat coderului și așteaptă `candidate_result`.
+- **PL6:** Primește verdictul Verifierului: `pass`, `fail`, `unknown`, `drift`, `blocked`, `regression`.
+- **PL7:** Transformă verdictul în următoarea acțiune.
+- **PL8:** Compară periodic planul și progresul direct cu `spec.md`.
+- **PL9:** Invalidează planurile/aprobările afectate de schimbări în `spec.md`, plan, scope sau head SHA.
+- **PL10:** Izolează proiectele, workspace-urile, sesiunile și starea.
+- **PL11:** Gestionează `blocked`, `stalled` și `exhausted` fără succes fals.
+- **PL12:** Cere decizia utilizatorului când scopul este ambiguu sau trebuie schimbat.
+- **PL13:** Produce mesajul HITL în cele trei secțiuni fără cod sau diff.
+- **PL14:** Este agnostic față de model/provider și acceptă alegerea ulterioară OpenCode Go.
 
-Each iteration performs exactly one bounded mutation or one read-only operation. Prefer deterministic operations for bookkeeping and validation.
+## 5. Ce face Coderul
 
-The executor MUST report:
+Coderul primește un singur task, nu întregul proiect:
 
-```yaml
-result:
-  status: succeeded | failed | blocked | needs_human_approval
-  changed_files: []
-  output_refs: []
-  summary: <what actually happened>
+```text
+AX/Runtime workspace izolat
+  -> context nou
+  -> citește task + fișiere relevante
+  -> modifică numai scope-ul
+  -> rulează testele relevante
+  -> produce commit și candidate_result
+  -> se oprește
 ```
 
-A successful mutation is not complete until a Tester or Verifier produces evidence. Evidence MUST identify the command or method, relevant inputs, result, and timestamp or iteration id.
+Cerințe coder:
 
-The loop MUST distinguish:
+- pornește de la `spec_sha`, `plan_sha` și `head_sha` exacte;
+- lucrează pe branch/workspace izolat;
+- primește context nou la fiecare iterație;
+- modifică numai scope-ul task-ului;
+- păstrează rezultatele brute ale testelor;
+- produce commit, modificări, teste, erori și restanțe;
+- nu modifică `spec.md`, criteriile sau politica Loop;
+- nu face merge și nu își aprobă rezultatul;
+- are maximum trei încercări pentru aceeași problemă;
+- codarea și continuous improvement folosesc local Qwen3.8-27B/Ollama;
+- executorul concret este DSH **sau** OpenCode, ales prin benchmark, nu ambele simultan.
 
-- `planned`: requested by Planner but not executed;
-- `executed`: action ran but is not yet verified;
-- `verified`: evidence supports the expected result;
-- `failed`: execution or verification failed;
-- `blocked`: policy, missing dependency, or ambiguity prevents progress.
+## 6. Ce face Verifierul
 
-The model MUST NOT mark an action `verified` solely because it generated code or because a command was expected to pass.
+Verifierul este separat logic de Planner și Coder și preferabil folosește alt model online. Primește direct:
 
-## State and record rules
-
-`state.md` is authoritative current state. `record.md` is append-only history. Neither file is owned by Planner, Coder, Tester, or Verifier; only `StateManager` may update them.
-
-State updates MUST be versioned and include the expected prior version:
-
-```yaml
-state_update:
-  expected_version: <integer>
-  new_version: <integer>
-  status: planned | executing | verified | failed | blocked
-  next_action: <one bounded action>
-  changes: []
-  evidence_refs: []
+```text
+spec.md la spec_sha
+plan/task la plan_sha
+candidate commit/head_sha
+rezultate CI
+candidate_result
+artefacte de test
+verdictul anterior
 ```
 
-If the expected version does not match, the update MUST be rejected and the context MUST be rebuilt.
+Pentru fiecare criteriu emite:
 
-Every record entry MUST state the iteration, role, action, result status, changed artifacts, and evidence references. The record is evidence of process, not a substitute for verification.
-
-## Completion and continuation
-
-After StateManager commits the result, the runner evaluates the objective:
-
-- continue only when a valid next action exists and the objective is not verified;
-- stop with `verified` when all acceptance criteria have evidence;
-- stop with `blocked` when progress requires missing information, policy approval, or a role outside the current loop;
-- stop with `failed` after the configured retry limit or when verification disproves the expected result.
-
-The loop MUST NOT repeat an already completed action unless the decision envelope records why a retry is necessary.
-
-## Minimal audit record
-
-For every iteration, persist at least:
-
-```yaml
-iteration: <integer>
-role: <role>
-intent: <bounded action>
-context_ids: []
-context_decision: reuse | rebuild
-executor: <executor>
-tool: <tool or none>
-permission: allow | ask | deny
-result: succeeded | failed | blocked | needs_human_approval
-changed_files: []
-evidence_refs: []
-next_action: <action or stop>
+```text
+pass | fail | unknown | blocked | drift | regression
++ evidence
++ risk
++ missing proof
++ next recommended correction
 ```
 
-This contract keeps `loop.md` Markdown-native while adding the Jev control plane: context is assembled deliberately, routing is cost-aware, tools are progressive, permissions are explicit, and every role has a constrained write boundary.
+Cerințe verifier:
+
+- nu se bazează numai pe rezumatul coderului;
+- verifică fiecare criteriu;
+- detectează drift față de `spec.md`;
+- confirmă că testele nu au fost slăbite;
+- leagă verdictul de head SHA și artefactele exacte;
+- recomandă următoarea problemă, dar nu o implementează;
+- nu aprobă în locul utilizatorului;
+- software-ul concret al verifierului rămâne neselectat și trebuie ales/testat separat.
+
+## 7. Cerințe Runtime
+
+Runtime-ul trebuie să ofere:
+
+- checkpoint după fiecare etapă importantă;
+- multi-project isolation;
+- pause/resume pentru HITL;
+- crash recovery;
+- retry cu clasificare transient/terminal;
+- idempotency și deduplicare;
+- un singur writer per proiect;
+- correlation IDs și observabilitate;
+- stop switch;
+- model/provider agnostic;
+- niciun script întreținut de utilizator.
+
+AX rămâne candidat pentru acest rol, dar nu i se atribuie automat implementarea tuturor invariantelor Loop. OpenClaw rămâne candidat pentru interfața Telegram și planner gateway, nu memorie autoritară de codare.
+
+## 8. Planner software — comparație și decizie
+
+| Loc | Software candidat | Telegram | Multi-project | Plan structurat | Model agnostic | Durabilitate/HITL | Verdict |
+|---:|---|---:|---:|---:|---:|---:|---|
+| 1 | OpenClaw Gateway + workflow rules | 10 | 9 | 8 | 8 | 8 | Candidat practic actual pentru Planner; necesită contracte Loop explicite |
+| 2 | LangGraph + Telegram adapter | 6 | 9 | 10 | 10 | 9 | Candidat tehnic puternic; necesită adapter și operare software |
+| 3 | Microsoft Agent Framework Workflows | 5 | 9 | 10 | 10 | 10 | Candidat robust de workflow; Telegram extern |
+| 4 | Temporal + planner agent | 5 | 10 | 8 | 10 | 10 | Candidat foarte robust pentru durabilitate; planner AI separat |
+| 5 | PydanticAI + Temporal | 4 | 9 | 10 | 10 | 10 | Candidat type-safe și durabil; complex |
+| 6 | Mastra Workflows | 4 | 8 | 9 | 9 | 8 | Candidat TypeScript cu suspend/resume |
+| 7 | CrewAI Flows | 4 | 8 | 9 | 9 | 8 | Candidat pentru flows, necesită implementare |
+| 8 | Google ADK | 3 | 8 | 9 | 8 | 8 | Candidat graph-agent; Telegram extern |
+| 9 | Hermes | 9 | 6 | 6 | 8 | 6 | Bun pentru Telegram/agent personal, mai slab pentru planner durabil |
+| 10 | OpenAI Agents SDK/AutoGen-style | 3 | 7 | 7 | 8 | 6 | Agent framework, nu planner complet |
+
+### Decizia curentă
+
+- **Planner gateway și Telegram:** OpenClaw Gateway — candidat practic actual.
+- **Planner model:** agnostic; va fi ales ulterior, probabil din OpenCode Go.
+- **Planner workflow runtime:** nu se declară automat OpenClaw complet; contractul Loop și testele de durabilitate sunt obligatorii.
+- **LangGraph, Microsoft Agent Framework, Temporal, PydanticAI+Temporal, Mastra, CrewAI, Google ADK, Hermes și OpenAI/AutoGen:** candidați de comparație, nu componente instalate simultan.
+- **AX:** runtime candidat, separat de Planner.
+- **Jev:** optional decision layer; nu este software-ul Plannerului.
+
+## 9. Fluxul informațional complet
+
+```text
+Telegram
+ -> OpenClaw Gateway
+ -> project_id + session isolated
+ -> spec.md + loop state
+ -> planner model online
+ -> plan/milestone/task package
+ -> Runtime/AX
+ -> one coder: DSH OR OpenCode + local Qwen3.8-27B
+ -> candidate commit/result
+ -> CI deterministic checks
+ -> separate online Verifier
+ -> verdict per criterion
+ -> Planner
+ -> correction / replan / goal alignment / HITL / finalization
+ -> human 3-step approval
+ -> protected merge
+ -> verified checkpoint
+```
+
+Verdictul este singurul feedback care poate genera următorul task; conversația veche a agentului nu este transferată. Dacă `spec_sha`, `plan_sha`, `head_sha`, testele obligatorii sau scope-ul se schimbă, dovezile și aprobările afectate se invalidează.
+
+## 10. State machines
+
+### Idea-to-Product
+
+`INGEST_SPEC -> VALIDATE_SPEC -> PLAN_ONLINE -> GOAL_TRACE_CHECK -> HUMAN_PLAN_GATE -> RUNTIME_TASK_CREATE -> ONE_CODER_TASK -> CI_TEST -> INDEPENDENT_VERIFY -> REPLAN_OR_NEXT -> HUMAN_BEHAVIOR_GATE -> FRESHNESS_CHECK -> MERGE -> CHECKPOINT -> NEXT_MILESTONE`.
+
+### Goal realignment
+
+`READ_ORIGINAL_SPEC_SHA -> MAP_REQUIREMENT_TO_TASK_TEST_EVIDENCE -> INDEPENDENT_GOAL_AUDIT -> ALIGNED | DRIFTED | AMBIGUOUS | INCOMPLETE | REGRESSION`.
+
+- `DRIFTED`: oprește codarea și reface planul.
+- `AMBIGUOUS`: cere decizia utilizatorului.
+- `INCOMPLETE`: creează task pentru criteriul lipsă.
+- `REGRESSION`: redeschide criteriul anterior.
+- `ALIGNED`: continuă către HITL sau următorul milestone.
+
+### Self-improvement
+
+`IDLE -> BOUNDED_LOCAL_AUDIT -> RUNTIME_TASK_CREATE -> LOCAL_CODER -> CI -> INDEPENDENT_VERIFY -> GOAL_ALIGNMENT -> HUMAN_GATE -> MERGE_OR_REJECT -> IDLE`.
+
+### Recovery
+
+`RESTART -> LOAD_CHECKPOINT -> RECONCILE_GITHUB_CI_RUNTIME -> RESUME | ESCALATE`. Maximum trei încercări pentru eșec tranzient; eroare terminală sau efect extern ambiguu oprește bucla fără retry orb.
+
+## 11. Non-Technical HITL
+
+Fiecare milestone are exact:
+
+1. **Ce s-a construit.**
+2. **Cum testezi în interfața normală.**
+3. **Ce rezultat trebuie să vezi pe ecran.**
+
+Utilizatorul răspunde `Aprob`, `Respinge` sau `Schimbă`. Nu citește cod, diff, terminal sau JSON. Aprobarea este legată de `project_id`, milestone, PR, `head_sha`, teste și timestamp. Orice schimbare relevantă cere reverificare. Operațiile financiare, publicarea, ștergerea și datele reale au o poartă separată.
+
+## 12. Log of Disregarded Options
+
+| Opțiune | Decizie |
+|---|---|
+| Planner nedefinit ca rol fără software | Corectat: OpenClaw Gateway este candidatul concret pentru planner gateway; modelul rămâne neselectat |
+| Cerințe planner/coder/verifier amestecate | Corectat prin secțiuni și proprietari separați |
+| OpenClaw ca memorie autoritară permanentă | Respins: risc de drift; adevărul este în artefactele versionate |
+| AX ca planner, verifier sau sursă de adevăr | Respins: AX este runtime candidat |
+| Jev ca planner/orchestrator | Respins: Jev este model/API de decizii tipizate, opțional |
+| AX + DSH + OpenCode simultan | Respins fără benchmark; se alege un singur executor |
+| Cloud pentru fiecare iterație de codare | Respins implicit: codarea locală; online planner și verifier |
+| Merge autonom sau aprobare prin diff | Respins: HITL comportamental obligatoriu |
+| Retry orb, context perpetuu, green checks = succes | Respinse: stare explicită, context nou, dovadă și limită de încercări |
+
+## 13. Stare de validare
+
+Arhitectura definește acum roluri și candidați software fără a pretinde că integrarea este instalată. Nu sunt încă validate: OpenClaw Telegram pe configurația utilizatorului, izolarea celor șase proiecte, contractele de output, software-ul verifierului, integrarea AX, alegerea DSH versus OpenCode, modelul plannerului din OpenCode Go, recovery după crash și testele end-to-end. Până atunci nu folosim afirmațiile `24/7`, `self-healing` sau `production-ready`.
